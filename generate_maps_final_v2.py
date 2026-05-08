@@ -1,26 +1,37 @@
 #!/usr/bin/env python3
 """
-Генератор карт ТПУ Ильинская — v3 (исправления дизайна).
+Генератор карт ТПУ Ильинская — v3.
 
-Исправления v3:
-- Medical: центр карты сдвинут на (37.380, 55.752) zoom=11 — участок
-  больше не уходит за верхний край, все POI видны.
-- Education: центр (37.400, 55.740) — лучший баланс.
-- Шрифты: добавлены кандидаты Noto Sans / Liberation Sans для Cyrillic.
-- Размер шрифтов увеличен: подписи 13px, заголовок 17px.
-- Маркер «Участок» — увеличен до r=11, ring белый 4px для контраста.
-- Подпись заголовка карты: фон непрозрачнее (alpha 248), скруглён сильнее.
-- Легенда: отступы вертикальные увеличены, кружок чуть крупнее.
+Рендерит 7 статичных PNG-карт на OSM-тайлах + competitors_bg.png:
+  maps/location_map.png — Об участке и местоположении
+  maps/transport_map.png — Транспортная доступность
+  maps/education_map.png — Образование и ДОУ
+  maps/sport_map.png — Спорт и рекреация
+  maps/trade_map.png — Торговля
+  maps/medical_map.png — Медицина
+  maps/competitors_bg.png — Конкурентное окружение (нумерованные маркеры)
+
+Исправления v3 (относительно исходного v2):
+ - Medical: zoom=11, центр (37.380, 55.752) — участок не уходит за край
+ - Education: центр (37.400, 55.740) — лучший баланс участок/POI
+ - Маркер «Участок»: r=11 + белое кольцо 4px для контраста
+ - Шрифты: подписи 13px, заголовок 17px
+ - Легенда: увеличенные вертикальные отступы
+ - competitors_bg: нумерованные маркеры, цветовая легенда по классу
 
 Зависимости:
     pip install staticmap pillow
 
 Запуск:
-    python generate_maps_final.py
+    python generate_maps_final_v2.py
+    # или только одну сцену:
+    python generate_maps_final_v2.py --scene transport
+    python generate_maps_final_v2.py --scene competitors
 """
 
 from __future__ import annotations
 
+import argparse
 import math
 import os
 from dataclasses import dataclass
@@ -44,6 +55,7 @@ PLOT_AREA_HA = 20.6
 PLOT_AREA_M2 = 206_700
 CADASTRE_NUMBER = "50:11:0050603:423"
 
+# Цвета
 PLOT_COLOR = "#0D2137"
 PLOT_OUTLINE = "#E74C3C"
 TEXT_COLOR = "#1A2230"
@@ -82,12 +94,38 @@ PLOT_POLYGON = [
 
 PLOT_CENTER = (55.8000, 37.2949)  # lat, lon
 
+COMPETITORS_POIS = [
+    # (name, lat, lon)
+    ("ТПУ Ильинская", 55.800, 37.295),       # 1 — целевой проект
+    ("СберСити", 55.734, 37.478),             # 2 — бизнес
+    ("Станиславский", 55.795, 37.330),        # 3 — бизнес
+    ("Строгино 360", 55.800, 37.410),         # 4 — комфорт
+    ("Квартал Строгино", 55.798, 37.403),     # 5 — комфорт
+    ("Мыс", 55.720, 37.300),                  # 6 — бизнес/премиум
+    ("Резиденции Сколково", 55.698, 37.359),  # 7 — бизнес-
+    ("Сити Бэй", 55.750, 37.490),             # 8 — комфорт+
+    ("Родина Переделкино", 55.645, 37.368),   # 9 — бизнес-
+]
+
+# Цвета маркеров конкурентов: 1=target(navy), 2,3,6,7,9=бизнес, 4,5,8=комфорт
+COMP_COLORS = {
+    1: ("#0D2137", True),    # Целевой проект
+    2: ("#1E40AF", False),
+    3: ("#1E40AF", False),
+    4: ("#2563EB", False),
+    5: ("#2563EB", False),
+    6: ("#1E40AF", False),
+    7: ("#1E40AF", False),
+    8: ("#2563EB", False),
+    9: ("#1E40AF", False),
+}
+
 # =============================================================================
 # FONT HELPERS
 # =============================================================================
 
 def _load_font(size: int, bold: bool = False):
-    candidates = []
+    candidates: List[str] = []
     if bold:
         candidates += [
             "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
@@ -118,7 +156,6 @@ FONT_17_B = _load_font(17, bold=True)
 
 # =============================================================================
 # SCENES
-# center = (lon, lat)
 # =============================================================================
 
 @dataclass
@@ -163,8 +200,7 @@ SCENES: List[Scene] = [
             ("СберСити", 55.734, 37.478),
             ("Павловская гимн.", 55.755, 37.338),
         ],
-        # FIX v3: сдвинут немного для лучшего баланса участок/POI
-        center=(37.400, 55.740),
+        center=(37.400, 55.740),  # FIX v3: баланс участок/POI
         zoom=11,
     ),
     Scene(
@@ -202,23 +238,9 @@ SCENES: List[Scene] = [
             ("Кластер Сколково", 55.698, 37.359),
             ("Медицина СберСити", 55.734, 37.478),
         ],
-        # FIX v3: zoom=11 + центр сдвинут севернее (55.752),
-        # чтобы участок был виден в верхней трети, а Лапино внизу.
-        center=(37.380, 55.752),
+        center=(37.380, 55.752),  # FIX v3: zoom=11, участок не уходит за край
         zoom=11,
     ),
-]
-
-COMPETITORS_POIS = [
-    ("ТПУ Ильинская", 55.800, 37.295),
-    ("СберСити", 55.734, 37.478),
-    ("Станиславский", 55.795, 37.330),
-    ("Строгино 360", 55.800, 37.410),
-    ("Квартал Строгино", 55.798, 37.403),
-    ("Мыс", 55.720, 37.300),
-    ("Резиденции Сколково", 55.698, 37.359),
-    ("Сити Бэй", 55.750, 37.490),
-    ("Родина Переделкино", 55.645, 37.368),
 ]
 
 # =============================================================================
@@ -234,29 +256,27 @@ def _mercator_world_px(lon: float, lat: float, zoom: int) -> Tuple[float, float]
     return x, y
 
 
-def _project(lon: float, lat: float, center: Tuple[float, float], zoom: int) -> Tuple[int, int]:
+def _project(lon: float, lat: float,
+             center: Tuple[float, float], zoom: int) -> Tuple[int, int]:
     cx, cy = _mercator_world_px(center[0], center[1], zoom)
     px, py = _mercator_world_px(lon, lat, zoom)
     return int(round(WIDTH / 2 + (px - cx))), int(round(MAP_H / 2 + (py - cy)))
 
 
-def _in_view(x: int, y: int, margin: int = 60) -> bool:
+def _in_view(x: int, y: int, margin: int = 30) -> bool:
     return -margin <= x <= WIDTH + margin and -margin <= y <= MAP_H + margin
 
 # =============================================================================
-# DRAW HELPERS
+# DRAWING PRIMITIVES
 # =============================================================================
 
-def _text_bbox(draw: ImageDraw.ImageDraw, xy, text: str, font):
-    try:
-        return draw.textbbox(xy, text, font=font)
-    except AttributeError:
-        w, h = draw.textsize(text, font=font)
-        return xy[0], xy[1], xy[0] + w, xy[1] + h
+def _text_bbox(draw: ImageDraw.ImageDraw,
+               pos: Tuple[int, int], text: str, font) -> Tuple[int, int, int, int]:
+    return draw.textbbox(pos, text, font=font)
 
 
-def _draw_label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str,
-                preferred: str = "right") -> None:
+def _draw_label(draw: ImageDraw.ImageDraw, x: int, y: int,
+                text: str, preferred: str = "right") -> None:
     is_primary = text in {"Участок", "ТПУ Ильинская"}
     font = FONT_13_B if is_primary else FONT_13
     pad_x, pad_y = 7, 4
@@ -267,7 +287,8 @@ def _draw_label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str,
         tx -= (bbox0[2] - bbox0[0])
     elif preferred == "above":
         bbox0 = _text_bbox(draw, (0, 0), text, font)
-        tx, ty = x - (bbox0[2] - bbox0[0]) // 2, y - 36
+        tx = x - (bbox0[2] - bbox0[0]) // 2
+        ty = y - 36
     else:
         tx, ty = x + 14, y - 12
 
@@ -295,15 +316,17 @@ def _draw_label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str,
 def _draw_marker(draw: ImageDraw.ImageDraw, x: int, y: int,
                  color: str, is_plot: bool = False) -> None:
     if is_plot:
-        # White halo → color fill → dark border
+        # White halo → color fill → dark border (r=11, ring=4px)
         draw.ellipse([x-15, y-15, x+15, y+15], fill=WHITE)
-        draw.ellipse([x-11, y-11, x+11, y+11], fill=color, outline="#0A1929", width=2)
+        draw.ellipse([x-11, y-11, x+11, y+11], fill=color,
+                     outline="#0A1929", width=2)
     else:
         draw.ellipse([x-10, y-10, x+10, y+10], fill=WHITE)
-        draw.ellipse([x-7, y-7, x+7, y+7], fill=color, outline="#111827", width=1)
+        draw.ellipse([x-7, y-7, x+7, y+7], fill=color,
+                     outline="#111827", width=1)
 
 
-def _draw_mkad_callout(img: Image.Image, scene: Scene) -> None:
+def _draw_mkad_callout(img: Image.Image) -> None:
     draw = ImageDraw.Draw(img, "RGBA")
     box = (WIDTH - 345, 88, WIDTH - 30, 152)
     draw.rounded_rectangle(
@@ -317,15 +340,15 @@ def _draw_mkad_callout(img: Image.Image, scene: Scene) -> None:
               fill=ARROW_COLOR, font=FONT_17_B)
 
 
-def _draw_plot_polygon(img: Image.Image, center: Tuple[float, float],
-                       zoom: int) -> Image.Image:
+def _draw_plot_polygon(img: Image.Image,
+                       center: Tuple[float, float], zoom: int) -> Image.Image:
     rgba = img.convert("RGBA")
     overlay = Image.new("RGBA", (WIDTH, MAP_H), (255, 255, 255, 0))
     od = ImageDraw.Draw(overlay)
-    polygon_px = [_project(lon, lat, center, zoom) for lon, lat in PLOT_POLYGON]
-    if len(polygon_px) >= 3:
-        od.polygon(polygon_px, fill=(231, 76, 60, 35))
-        od.line(polygon_px, fill=(231, 76, 60, 255), width=3, joint="curve")
+    poly_px = [_project(lon, lat, center, zoom) for lon, lat in PLOT_POLYGON]
+    if len(poly_px) >= 3:
+        od.polygon(poly_px, fill=(231, 76, 60, 35))
+        od.line(poly_px, fill=(231, 76, 60, 255), width=3, joint="curve")
     return Image.alpha_composite(rgba, overlay).convert("RGB")
 
 
@@ -339,7 +362,10 @@ def _draw_pois(img: Image.Image, scene: Scene) -> Image.Image:
         color = PLOT_COLOR if is_plot else POI_COLORS[i % len(POI_COLORS)]
         _draw_marker(draw, x, y, color, is_plot=is_plot)
         if scene.label_all or is_plot:
-            preferred = "above" if (is_plot and scene.name in {"education", "medical"}) else "right"
+            preferred = (
+                "above" if (is_plot and scene.name in {"education", "medical"})
+                else "right"
+            )
             _draw_label(draw, x, y, name, preferred=preferred)
     return img
 
@@ -409,7 +435,7 @@ def generate_scene_map(scene: Scene, output_path: str) -> str:
     img = _draw_plot_polygon(img, scene.center, scene.zoom)
     img = _draw_pois(img, scene)
     if scene.show_mkad_callout:
-        _draw_mkad_callout(img, scene)
+        _draw_mkad_callout(img)
     _draw_scene_header(img, scene.title)
     canvas = _draw_legend(img, scene)
     canvas.save(output_path, quality=95)
@@ -430,60 +456,108 @@ def generate_competitors_bg(output_path: str) -> str:
         x, y = _project(lon, lat, center, zoom)
         if not _in_view(x, y):
             continue
-        is_target = (i == 1)
-        color = PLOT_COLOR if is_target else "#2563EB"
+        color, is_target = COMP_COLORS.get(i, ("#2563EB", False))
         r = 14 if is_target else 11
 
+        # Белое кольцо
         draw.ellipse([x-r-3, y-r-3, x+r+3, y+r+3], fill=WHITE)
         draw.ellipse([x-r, y-r, x+r, y+r], fill=color, outline="#111827", width=1)
 
+        # Номер по центру
         num = str(i)
         bbox = _text_bbox(draw, (0, 0), num, FONT_13_B)
-        tw = bbox[2] - bbox[0]; th = bbox[3] - bbox[1]
-        draw.text((x - tw/2, y - th/2 - 1), num, fill=WHITE, font=FONT_13_B)
-        legend_items.append((i, name, color))
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        draw.text((x - tw / 2, y - th / 2 - 1), num, fill=WHITE, font=FONT_13_B)
+        legend_items.append((i, name, color, is_target))
 
     _draw_scene_header(img, "Проекты конкурентного окружения")
 
-    canvas = Image.new("RGB", (WIDTH, HEIGHT + 30), WHITE)
+    # ── Легенда ──────────────────────────────────────────────────────────────
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), (255, 255, 255))
     canvas.paste(img, (0, 0))
     d = ImageDraw.Draw(canvas)
     d.line([(0, MAP_H), (WIDTH, MAP_H)], fill="#D1D5DB", width=1)
+    d.text((20, MAP_H + 12), "Обозначения", fill=TEXT_COLOR, font=FONT_13_B)
 
-    x, y = 20, MAP_H + 13
-    for i, name, color in legend_items:
-        d.ellipse([x, y+3, x+14, y+17], fill=color, outline="#111827", width=1)
-        d.text((x+4, y+2), str(i), fill=WHITE, font=FONT_10)
-        label = f"{i}. {name}"
-        d.text((x+22, y), label, fill=TEXT_COLOR, font=FONT_11)
-        w = d.textlength(label, font=FONT_11)
-        x += int(w) + 56
-        if x > WIDTH - 260:
-            x = 20; y += 22
+    # Нумерованные элементы легенды
+    x, y = 140, MAP_H + 11
+    for i, name, color, is_target in legend_items:
+        r = 8 if is_target else 6
+        d.ellipse([x, y + 4, x + r*2, y + 4 + r*2], fill=color,
+                  outline="#111827", width=1)
+        d.text((x + r - 3, y + 3), str(i), fill=WHITE, font=FONT_10)
+        lbl = f"{i}. {name}"
+        d.text((x + r*2 + 8, y + 1), lbl, fill=TEXT_COLOR, font=FONT_11)
+        lw = d.textlength(lbl, font=FONT_11)
+        x += int(lw) + r*2 + 8 + 22
+        if x > WIDTH - 230:
+            x = 140; y += 22
 
-    d.text((20, HEIGHT + 4),
-           f"Контур: кадастровый участок {CADASTRE_NUMBER}, {PLOT_AREA_HA:.1f} га",
-           fill="#993333", font=FONT_11)
-    d.text((WIDTH - 250, HEIGHT + 4), "© OpenStreetMap, Росреестр", fill=MUTED_TEXT, font=FONT_11)
+    # Цветовая легенда по классу
+    cy2 = MAP_H + 76
+    items_class = [
+        ("#0D2137", "Целевой проект"),
+        ("#1E40AF", "Бизнес-класс"),
+        ("#2563EB", "Комфорт-класс"),
+    ]
+    cx2 = 20
+    for color, label in items_class:
+        d.ellipse([cx2, cy2 + 2, cx2 + 14, cy2 + 14], fill=color, outline="#111827", width=1)
+        d.text((cx2 + 18, cy2), label, fill=TEXT_COLOR, font=FONT_11)
+        cx2 += 18 + int(d.textlength(label, font=FONT_11)) + 24
+
+    d.text((WIDTH - 250, cy2), "© OpenStreetMap, Росреестр", fill=MUTED_TEXT, font=FONT_11)
+
     canvas.save(output_path, quality=95)
     return output_path
 
 
+# =============================================================================
+# MAIN
+# =============================================================================
+
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Генератор карт ТПУ Ильинская v3")
+    parser.add_argument(
+        "--scene", default=None,
+        help="Имя сцены для генерации одной карты "
+             "(location|transport|education|sport|trade|medical|competitors). "
+             "Если не указано — генерируются все.")
+    args = parser.parse_args()
+
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    for scene in SCENES:
-        path = os.path.join(OUTPUT_DIR, f"{scene.name}_map.png")
-        generate_scene_map(scene, path)
-        print(f"  ✓ {path}  ({len(scene.pois)} POI, zoom={scene.zoom})")
+    scene_map = {s.name: s for s in SCENES}
 
-    comp_path = os.path.join(OUTPUT_DIR, "competitors_bg.png")
-    generate_competitors_bg(comp_path)
-    print(f"  ✓ {comp_path}  ({len(COMPETITORS_POIS)} POI)")
+    if args.scene:
+        if args.scene == "competitors":
+            path = os.path.join(OUTPUT_DIR, "competitors_bg.png")
+            generate_competitors_bg(path)
+            print(f"  ✓ {path}")
+        elif args.scene in scene_map:
+            s = scene_map[args.scene]
+            path = os.path.join(OUTPUT_DIR, f"{s.name}_map.png")
+            generate_scene_map(s, path)
+            print(f"  ✓ {path}  ({len(s.pois)} POI, zoom={s.zoom})")
+        else:
+            valid = list(scene_map.keys()) + ["competitors"]
+            print(f"Неизвестная сцена {args.scene!r}. Доступные: {valid}")
+            raise SystemExit(1)
+    else:
+        for scene in SCENES:
+            path = os.path.join(OUTPUT_DIR, f"{scene.name}_map.png")
+            generate_scene_map(scene, path)
+            print(f"  ✓ {path}  ({len(scene.pois)} POI, zoom={scene.zoom})")
 
-    print(f"\n✅ Готово — {len(SCENES)} карт + competitors_bg.png в '{OUTPUT_DIR}/'")
-    print(f"   Площадь: {PLOT_AREA_HA:.1f} га / {PLOT_AREA_M2:,} м²")
+        comp_path = os.path.join(OUTPUT_DIR, "competitors_bg.png")
+        generate_competitors_bg(comp_path)
+        print(f"  ✓ {comp_path}  ({len(COMPETITORS_POIS)} POI)")
+
+    print(f"\n✅ Готово — {len(SCENES)} карт + competitors_bg.png → '{OUTPUT_DIR}/'")
+    print(f"   Участок {CADASTRE_NUMBER}, {PLOT_AREA_HA:.1f} га / {PLOT_AREA_M2:,} м²")
 
 
 if __name__ == "__main__":
